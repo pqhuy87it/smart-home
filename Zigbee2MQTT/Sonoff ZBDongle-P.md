@@ -100,3 +100,64 @@ Toàn bộ project ESP32 hiện tại của anh (C3 SuperMini, S3, T-Display S3,
 Nếu con C6 tầng 3 chạy **WiFi** thì đúng, nó đi qua AP tầng 3 rồi xuống Pi qua dây mạng — không cần quan tâm tới dongle Zigbee.
 
 Nếu anh muốn **thiết bị Zigbee ở tầng 3**, thì phải đầu tư router: ít nhất một ổ cắm/công tắc Zigbee ở tầng 2 và một ở tầng 3. Đừng mua sensor Zigbee cho tầng 3 trước khi có chuỗi router đó, nếu không nó sẽ pair được lúc đứng cạnh Pi rồi mất kết nối khi mang lên tầng.
+
+---
+
+Đúng. Nếu toàn bộ thiết bị là board ESP32 anh tự làm, thì **anh không cần ZBDongle-P chút nào**. Stack sẽ chỉ còn:
+
+```
+Pi 5  →  Mosquitto + Home Assistant + ESPHome
+              ↑ WiFi / LAN cùng subnet
+      ESP32-C3 / C6 / S3 / ESP8266
+```
+
+Không coordinator, không mesh, không permit-join, không lo chọn Zigbee channel. Với người đã tự thiết kế phần cứng như anh thì đây thực sự là con đường tự nhiên hơn — anh kiểm soát hoàn toàn firmware, không phụ thuộc converter của ai.
+
+Nhưng có mấy giới hạn anh nên biết trước để không phải làm lại sau.
+
+## Chỗ WiFi-only sẽ đụng tường
+
+**1. Thiết bị chạy pin cần phản hồi tức thì.** Đây là giới hạn thật sự, và không có cách nào lách.
+
+| | Bắt tay/gửi 1 event | Dòng đỉnh | Pin CR2032 (~220mAh) |
+|---|---|---|---|
+| WiFi (assoc + DHCP + MQTT) | 1–3 giây | 100–250mA | vài giờ đến vài ngày |
+| Zigbee end device | ~10–30ms | ~30mA | 1–2 năm |
+
+Chênh lệch năng lượng mỗi event khoảng **hai bậc**. Một cảm biến cửa phải báo ngay lúc mở, chạy pin cúc áo, thì WiFi không làm được. Chấm hết.
+
+Nhưng — và đây là phần quan trọng — WiFi **vẫn ổn cho sensor báo chậm**. Con e-ink calendar 18650 của anh, hay project water level C6 với deep sleep, đúng là dạng này: thức mỗi 10–15 phút, gửi, ngủ lại. Trên 18650 2500mAh thì chạy được nhiều tuần đến vài tháng. Nên đừng nghĩ WiFi = phải cắm điện.
+
+Ranh giới thực tế: **event-driven + pin nhỏ → cần Zigbee. Polling chậm + pin lớn → WiFi ổn.**
+
+**2. Số lượng client trên AP.** Vượt khoảng 30–40 thiết bị WiFi trên một AP dân dụng là bắt đầu có chuyện: bảng ARP, airtime, DHCP pool. Mỗi keepalive của ESP32 đều chiếm airtime chung với điện thoại và laptop của anh. Coordinator Zigbee gánh 50+ thiết bị mà không tiêu tốn một chút airtime WiFi nào.
+
+Với 10–15 board thì hoàn toàn không sao. Với 60 thiết bị thì khác.
+
+**3. Đồ mua sẵn.** Công tắc âm tường, motor rèm, van sưởi, khoá cửa — có bản WiFi (Tuya) và về lý thuyết flash được ESPHome. Nhưng đồ Tuya mới đa số **không còn dùng chip ESP** nữa, chuyển sang Beken BK7231 → phải dùng LibreTiny/OpenBeken, và tỉ lệ brick cao hơn. Nếu không flash thì lại phải qua cloud Tuya — đúng thứ anh đang tránh.
+
+**4. Failure mode khác nhau.** Router/AP reboot → **toàn bộ** thiết bị WiFi rớt cùng lúc. Mesh Zigbee vẫn tự chạy giữa các node kể cả khi Pi chết.
+
+## Khuyến nghị của tôi
+
+**Đừng mua dongle bây giờ.** Bắt đầu WiFi-only, vì đó là thứ anh đã có sẵn cả kỹ năng lẫn phần cứng. Khi nào đụng tường thật (cần cảm biến cửa/chuyển động chạy pin, hoặc muốn công tắc âm tường tử tế) thì mua sau.
+
+Chi phí migrate gần như bằng không, vì **Home Assistant chính là tầng tổng hợp**. Thêm Zigbee2MQTT vào sau chỉ là thêm một container và một dongle — không phải sửa gì trong các board ESP32 đang chạy, không phải làm lại automation nào. Anh chỉ có thêm entity mới.
+
+## Nhưng WiFi-only thì phải làm chuẩn mấy thứ này
+
+1. **DHCP reservation cho từng board.** Anh đã làm cho con K1C rồi, làm y hệt. Với 10+ board thì việc biết chắc IP nào là board nào cực kỳ quan trọng khi debug.
+
+2. **ESPHome, đừng tự viết firmware cho tất cả.** Đây là thay đổi lớn nhất về chất lượng cuộc sống. Với 1–2 board thì tự viết vui, với 12 board thì mỗi lần đổi tên MQTT topic là 12 lần flash. ESPHome cho anh OTA hàng loạt, config YAML tập trung, tự sinh entity. Vẫn viết custom C++ component được khi cần logic đặc biệt.
+
+3. **Cấu hình AP cho ESP32.** ESP32 chỉ có 2.4GHz, và một số setting hiện đại sẽ làm nó không join được:
+   - Băng 2.4GHz để **WPA2** hoặc WPA2/WPA3 mixed, **không phải WPA3-only**.
+   - **Tắt PMF required** (Protected Management Frames bắt buộc).
+   - **Channel width 20MHz**, không dùng 40MHz.
+   - Bật tương thích 802.11b/g/n, đừng bật chế độ chỉ-ax.
+
+4. **Mỗi board một MQTT user riêng** trong Mosquitto, kèm ACL giới hạn topic. Board bị chiếm quyền thì không publish bừa lên topic của thiết bị khác.
+
+5. **Đừng cách ly IoT sang VLAN riêng** trong giai đoạn này. Nó phá mDNS discovery và anh sẽ mất thời gian debug firewall thay vì làm smart home. Anh vừa mới dọn về subnet phẳng, giữ nguyên vậy đi.
+
+Anh muốn tôi viết cấu hình ESPHome đầu tiên cho một con C6 (ví dụ sensor nhiệt độ/độ ẩm hoặc con IR blaster), hay viết phần Mosquitto ACL cho nhiều board trước?
